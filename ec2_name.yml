@@ -1,0 +1,107 @@
+# AWS EC2 hostname, instance, volume, eni change to tags:Name
+# author: Dennis.Koo
+# 
+# example:
+# basic
+# ansible-playbook -i '10.0.0.159,' hostname.yml --extra-vars "hostname=es-products-data-01-cz"
+#
+# specify login user
+# ansible-playbook -i '10.0.0.159,' hostname.yml --extra-vars "user=ubuntu hostname=es-products-data-01-cz"
+#
+# specify port
+# ansible-playbook -i '10.0.0.159,' hostname.yml --extra-vars "user=ubuntu port=2020 hostname=es-products-data-01-cz"
+---
+- name: AWS EC2 hostname, instance, volume, eni change to argument
+  hosts: all
+  strategy: free
+  gather_facts: no
+  user: "{{user | default('ubuntu')}}"
+  become: yes
+  become_method: sudo
+  become_user: root
+  pre_tasks:
+#    - name: debug
+#      debug: msg="{{hostname}}"
+#      tags:
+#        - always
+
+    - name: Set ansible_port to specify port
+      set_fact:
+        ansible_port: "{{port}}"
+      when: port is defined
+
+    - name: PIP Install, boto require
+      pip: name=boto
+
+  tasks:
+    - name: get hostname
+      command: hostname
+      register: oldname
+
+    - name: Remove old hostname {{oldname.stdout}} from /etc/hosts
+      lineinfile:
+        dest: /etc/hosts
+        regexp: "^127.0.0.1 {{item}}"
+        state: absent
+      with_items: 
+          - "{{oldname.stdout}}"
+
+    - name: Set hostname {{hostname}}
+      hostname:
+        name: "{{hostname}}"
+    
+    - name: Add new hostname {{hostname}} to /etc/hosts
+      lineinfile:
+        dest: /etc/hosts
+        line: "127.0.0.1 {{hostname}}"
+        insertafter: '^127.0.0.1'
+
+    - name: Gether EC2 Instance facts
+      action: ec2_facts
+
+    - name: Change EC2 Instance Name to hostname
+      local_action : ec2_tag
+        region="{{ansible_ec2_placement_region}}"
+        resource="{{ansible_ec2_instance_id}}"
+        state=present
+      args:
+        tags:
+          Name: "{{hostname}}"
+    
+
+    - name: Gather Volume facts
+      local_action: ec2_vol_facts
+        filters=attachment.instance-id="{{ansible_ec2_instance_id}}"
+        region="{{ansible_ec2_placement_region}}"
+      register: ec2_vol
+
+    - name: Change Volumes Name to hostname
+      local_action : ec2_tag
+        resource={{item.id}}
+        region="{{ansible_ec2_placement_region}}"
+        state=present
+      args:
+        tags:
+          Name: "{{hostname}}-vol-{{item.attachment_set.device.split('/')[-1]}}"
+      with_items:
+        - "{{ec2_vol.volumes}}"
+
+
+    - name: Gather Network Interface facts
+      local_action: ec2_eni_facts
+        filters=attachment.instance-id="{{ansible_ec2_instance_id}}"
+        region="{{ansible_ec2_placement_region}}"
+      register: ec2_eni
+
+    - name: Change EC2 Network Interfaces Name to hostname
+      local_action : ec2_tag
+        resource={{item.network_interface_id}}
+        region="{{ansible_ec2_placement_region}}"
+        state=present
+      args:
+        tags:
+          Name: "{{hostname}}-eni"
+      with_items:
+        - "{{ec2_eni.network_interfaces}}"
+
+
